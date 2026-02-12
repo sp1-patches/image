@@ -34,6 +34,8 @@ mod filter_1d;
 pub(crate) mod resize;
 mod sample;
 
+pub(crate) mod succinct;
+
 pub use fast_blur::fast_blur;
 pub(crate) use sample::gaussian_blur_dyn_image;
 pub use sample::{blur_advanced, GaussianBlurParameters};
