@@ -1,12 +1,8 @@
 //! Functions for altering and converting the color of pixelbufs
 
-use std::any::TypeId;
-use std::u8;
-
 use num_traits::NumCast;
 
 use crate::color::{FromColor, IntoColor, Luma, LumaA};
-use crate::imageops::succinct::LazyConstrastLut;
 use crate::metadata::{CicpColorPrimaries, CicpTransferCharacteristics};
 use crate::traits::{Pixel, Primitive};
 use crate::utils::clamp;
@@ -99,35 +95,36 @@ where
 {
     let mut out = image.buffer_like();
 
-    if TypeId::of::<S>() == TypeId::of::<u8>() {
-        let mut lut = LazyConstrastLut::new(contrast);
+    #[cfg(all(target_os = "zkvm", target_vendor = "succinct"))]
+    if std::any::TypeId::of::<S>() == std::any::TypeId::of::<u8>() {
+        let mut lut = crate::imageops::succinct::LazyConstrastLut::new(contrast);
 
         for (x, y, pixel) in image.pixels() {
             let f = pixel.map(|b| lut.get(b));
             out.put_pixel(x, y, f);
         }
 
-        out
-    } else {
-        let max = S::DEFAULT_MAX_VALUE;
-        let max: f32 = NumCast::from(max).unwrap();
-
-        let percent = ((100.0 + contrast) / 100.0).powi(2);
-
-        for (x, y, pixel) in image.pixels() {
-            let f = pixel.map(|b| {
-                let c: f32 = NumCast::from(b).unwrap();
-
-                let d = ((c / max - 0.5) * percent + 0.5) * max;
-                let e = clamp(d, 0.0, max);
-
-                NumCast::from(e).unwrap()
-            });
-            out.put_pixel(x, y, f);
-        }
-
-        out
+        return out;
     }
+
+    let max = S::DEFAULT_MAX_VALUE;
+    let max: f32 = NumCast::from(max).unwrap();
+
+    let percent = ((100.0 + contrast) / 100.0).powi(2);
+
+    for (x, y, pixel) in image.pixels() {
+        let f = pixel.map(|b| {
+            let c: f32 = NumCast::from(b).unwrap();
+
+            let d = ((c / max - 0.5) * percent + 0.5) * max;
+            let e = clamp(d, 0.0, max);
+
+            NumCast::from(e).unwrap()
+        });
+        out.put_pixel(x, y, f);
+    }
+
+    out
 }
 
 /// Adjust the contrast of the supplied image in place.

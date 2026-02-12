@@ -34,6 +34,7 @@ mod filter_1d;
 pub(crate) mod resize;
 mod sample;
 
+#[cfg(all(target_os = "zkvm", target_vendor = "succinct"))]
 pub(crate) mod succinct;
 
 pub use fast_blur::fast_blur;
