@@ -1898,6 +1898,58 @@ where
     tmp
 }
 
+/// Performs an unsharpen mask on the supplied image using box blur.
+///
+/// This is functionally equivalent to [`unsharpen`] but uses [`box_blur`] instead of
+/// Gaussian blur, making it significantly faster on the SP1 zkVM where
+/// floating-point operations are expensive.
+///
+/// # Arguments
+///
+/// * `sigma` - controls the blur radius passed to [`box_blur`].
+/// * `threshold` - minimal brightness difference (per channel) required for sharpening.
+///
+/// # Panics
+///
+/// Panics if the image subpixel type is not `u8` (same restriction as [`box_blur`]).
+pub fn box_unsharpen<I, P, S>(image: &I, sigma: f32, threshold: i32) -> ImageBuffer<P, Vec<S>>
+where
+    I: GenericImageView<Pixel = P>,
+    P: Pixel<Subpixel = S> + 'static,
+    S: Primitive + 'static,
+{
+    let mut tmp = box_blur(image, sigma);
+
+    let max = S::DEFAULT_MAX_VALUE;
+    let max: i32 = NumCast::from(max).unwrap();
+    let (width, height) = image.dimensions();
+
+    for y in 0..height {
+        for x in 0..width {
+            let a = image.get_pixel(x, y);
+            let b = tmp.get_pixel_mut(x, y);
+
+            let p = a.map2(b, |c, d| {
+                let ic: i32 = NumCast::from(c).unwrap();
+                let id: i32 = NumCast::from(d).unwrap();
+
+                let diff = ic - id;
+
+                if diff.abs() > threshold {
+                    let e = clamp(ic + diff, 0, max);
+                    NumCast::from(e).unwrap()
+                } else {
+                    c
+                }
+            });
+
+            *b = p;
+        }
+    }
+
+    tmp
+}
+
 #[cfg(test)]
 mod tests {
     use super::{resize, sample_bilinear, sample_nearest, FilterType};
