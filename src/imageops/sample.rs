@@ -1014,6 +1014,308 @@ where
     gaussian_blur_indirect(image, GaussianBlurParameters::new_from_radius(radius))
 }
 
+/// Performs a box blur on the supplied image.
+///
+/// A box blur uses a uniform kernel where all weights are equal, making it faster
+/// than Gaussian blur. The algorithm applies a separable 2D convolution with a
+/// uniform kernel in both horizontal and vertical directions.
+///
+/// # Arguments
+///
+/// * `image` - The input image to blur
+/// * `radius` - The blur radius. The kernel size will be `(radius * 2) + 1`
+///
+/// # Performance
+///
+/// This implementation is optimized for the SP1 zkVM:
+/// - Uses integer arithmetic only (no floating-point operations)
+/// - Applies separable convolution to reduce complexity from O(n²) to O(n)
+/// - Uses u32 accumulators to prevent overflow
+///
+/// # Panics
+///
+/// Panics if the image subpixel type is not `u8`. Only `Luma<u8>`, `LumaA<u8>`,
+/// `Rgb<u8>`, and `Rgba<u8>` images are supported.
+///
+/// # Examples
+///
+/// ```no_run
+/// use image::imageops::box_blur;
+/// use image::open;
+///
+/// let img = open("input.png").unwrap();
+/// let blurred = box_blur(&img, 2.0);
+/// ```
+pub fn box_blur<I: GenericImageView>(
+    image: &I,
+    radius: f32,
+) -> ImageBuffer<I::Pixel, Vec<<I::Pixel as Pixel>::Subpixel>>
+where
+    I::Pixel: 'static,
+{
+    use std::any::TypeId;
+
+    if TypeId::of::<<I::Pixel as Pixel>::Subpixel>() != TypeId::of::<u8>() {
+        panic!("box_blur only supports u8 subpixel types (Luma<u8>, Rgb<u8>, Rgba<u8>, etc.)");
+    }
+
+    let kernel_size = (radius * 2.0).round() as u32 + 1;
+    let kernel_size = if kernel_size.is_multiple_of(2) {
+        kernel_size + 1
+    } else {
+        kernel_size
+    };
+
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    let cn = I::Pixel::CHANNEL_COUNT as usize;
+
+    // Extract raw pixel data once to avoid per-pixel trait dispatch in the blur loops.
+    // SAFETY: x < width and y < height are guaranteed by the loop bounds.
+    let mut src = vec![0u8; width * height * cn];
+    let mut dst_ptr = src.as_mut_ptr();
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = unsafe { image.unsafe_get_pixel(x as u32, y as u32) };
+            let channels = pixel.channels();
+            unsafe {
+                (0..cn).for_each(|c| {
+                    *dst_ptr = *(&channels[c] as *const _ as *const u8);
+                    dst_ptr = dst_ptr.add(1);
+                });
+            }
+        }
+    }
+
+    let result = match cn {
+        1 => box_blur_impl::<1>(&src, width, height, kernel_size),
+        2 => box_blur_impl::<2>(&src, width, height, kernel_size),
+        3 => box_blur_impl::<3>(&src, width, height, kernel_size),
+        4 => box_blur_impl::<4>(&src, width, height, kernel_size),
+        _ => unimplemented!(),
+    };
+
+    // Reconstruct ImageBuffer directly from raw bytes (Subpixel is u8, verified above)
+    // SAFETY: We verified TypeId::of::<Subpixel>() == TypeId::of::<u8>() above,
+    // so Vec<u8> and Vec<Subpixel> have identical layout.
+    let raw: Vec<<I::Pixel as Pixel>::Subpixel> = unsafe {
+        let mut result = std::mem::ManuallyDrop::new(result);
+        Vec::from_raw_parts(
+            result.as_mut_ptr() as *mut <I::Pixel as Pixel>::Subpixel,
+            result.len(),
+            result.capacity(),
+        )
+    };
+    ImageBuffer::from_raw(width as u32, height as u32, raw)
+        .expect("buffer size matches image dimensions")
+}
+
+/// Computes `value / divisor` using a precomputed fixed-point reciprocal (24-bit shift).
+#[inline(always)]
+fn fixpoint_div(value: u32, recip: u32) -> u32 {
+    ((value as u64 * recip as u64) >> 24) as u32
+}
+
+/// Reads CN values from `ptr` into u32 accumulators.
+#[inline(always)]
+unsafe fn read_add<const CN: usize>(sums: &mut [u32; MAX_CHANNEL], ptr: *const u8) {
+    (0..CN).for_each(|c| {
+        sums[c] += *ptr.add(c) as u32;
+    });
+}
+
+/// Reads CN u16 values from `ptr` into u32 accumulators.
+#[inline(always)]
+unsafe fn read_add_u16<const CN: usize>(sums: &mut [u32; MAX_CHANNEL], ptr: *const u16) {
+    (0..CN).for_each(|c| {
+        sums[c] += *ptr.add(c) as u32;
+    });
+}
+
+/// Reads CN values from `ptr` and subtracts from u32 accumulators.
+#[inline(always)]
+unsafe fn read_sub<const CN: usize>(sums: &mut [u32; MAX_CHANNEL], ptr: *const u8) {
+    (0..CN).for_each(|c| {
+        sums[c] -= *ptr.add(c) as u32;
+    });
+}
+
+/// Reads CN u16 values from `ptr` and subtracts from u32 accumulators.
+#[inline(always)]
+unsafe fn read_sub_u16<const CN: usize>(sums: &mut [u32; MAX_CHANNEL], ptr: *const u16) {
+    (0..CN).for_each(|c| {
+        sums[c] -= *ptr.add(c) as u32;
+    });
+}
+
+/// Writes CN accumulator values to `ptr` as u16.
+#[inline(always)]
+unsafe fn write_u16<const CN: usize>(sums: &[u32; MAX_CHANNEL], ptr: *mut u16) {
+    (0..CN).for_each(|c| {
+        *ptr.add(c) = sums[c] as u16;
+    });
+}
+
+/// Writes CN accumulator values to `ptr` as u8 after fixed-point division.
+#[inline(always)]
+unsafe fn write_div_u8<const CN: usize>(sums: &[u32; MAX_CHANNEL], recip: u32, ptr: *mut u8) {
+    (0..CN).for_each(|c| {
+        *ptr.add(c) = fixpoint_div(sums[c], recip) as u8;
+    });
+}
+
+fn box_blur_impl<const CN: usize>(
+    src: &[u8],
+    width: usize,
+    height: usize,
+    kernel_size: u32,
+) -> Vec<u8> {
+    let radius = (kernel_size / 2) as usize;
+    let stride = width * CN;
+
+    // Single fixed-point reciprocal for k²: horizontal pass stores raw sums,
+    // vertical pass divides by k² once, avoiding intermediate quantization.
+    let k_sq = kernel_size as u64 * kernel_size as u64;
+    let recip_sq = ((1u64 << 24) + k_sq - 1) as u32 / k_sq as u32;
+
+    let mut intermediate = vec![0u16; width * height * CN];
+    let mut output = vec![0u8; width * height * CN];
+
+    // === Horizontal pass: u8 src -> u16 intermediate (raw sums, no division) ===
+    for y in 0..height {
+        let off = y * stride;
+        let mut sums = [0u32; MAX_CHANNEL];
+
+        // SAFETY: all pointer offsets stay within [0, width*height*CN) for their respective buffers.
+        unsafe {
+            let sp = src.as_ptr().add(off);
+            let ip = intermediate.as_mut_ptr().add(off);
+
+            // Init window: pixel[0] replicated for the radius clamped positions, plus [1..radius]
+            (0..CN).for_each(|c| {
+                sums[c] = *sp.add(c) as u32 * (radius as u32 + 1);
+            });
+            for k in 1..=radius {
+                read_add::<CN>(&mut sums, sp.add(k.min(width - 1) * CN));
+            }
+            write_u16::<CN>(&sums, ip);
+
+            // Leading edge: prev clamped to pixel[0]
+            for x in 1..=radius.min(width - 1) {
+                read_add::<CN>(&mut sums, sp.add((x + radius).min(width - 1) * CN));
+                read_sub::<CN>(&mut sums, sp);
+                write_u16::<CN>(&sums, ip.add(x * CN));
+            }
+
+            // Middle: no clamping, pointer increments only
+            let mid_lo = radius + 1;
+            let mid_hi = width.saturating_sub(radius + 1);
+            if mid_lo <= mid_hi {
+                let mut pp = sp;
+                let mut np = sp.add((mid_lo + radius) * CN);
+                let mut dp = ip.add(mid_lo * CN);
+                for _ in mid_lo..=mid_hi {
+                    read_add::<CN>(&mut sums, np);
+                    read_sub::<CN>(&mut sums, pp);
+                    write_u16::<CN>(&sums, dp);
+                    pp = pp.add(CN);
+                    np = np.add(CN);
+                    dp = dp.add(CN);
+                }
+            }
+
+            // Trailing edge: next clamped to last pixel
+            let trail = if mid_lo <= mid_hi {
+                mid_hi + 1
+            } else {
+                radius + 1
+            };
+            if trail < width {
+                let last = sp.add((width - 1) * CN);
+                let mut pp = sp.add((trail - radius - 1) * CN);
+                let mut dp = ip.add(trail * CN);
+                for _ in trail..width {
+                    read_add::<CN>(&mut sums, last);
+                    read_sub::<CN>(&mut sums, pp);
+                    write_u16::<CN>(&sums, dp);
+                    pp = pp.add(CN);
+                    dp = dp.add(CN);
+                }
+            }
+        }
+    }
+
+    // === Vertical pass: u16 intermediate -> u8 output (divide by k²) ===
+    for x in 0..width {
+        let col = x * CN;
+        let mut sums = [0u32; MAX_CHANNEL];
+
+        // SAFETY: same bounds reasoning as horizontal pass, using stride for vertical step.
+        unsafe {
+            let ip = intermediate.as_ptr();
+            let op = output.as_mut_ptr();
+
+            // Init window: row[0] replicated for clamped positions, plus rows [1..radius]
+            let p0 = ip.add(col);
+            (0..CN).for_each(|c| {
+                sums[c] = *p0.add(c) as u32 * (radius as u32 + 1);
+            });
+            for k in 1..=radius {
+                read_add_u16::<CN>(&mut sums, ip.add(k.min(height - 1) * stride + col));
+            }
+            write_div_u8::<CN>(&sums, recip_sq, op.add(col));
+
+            // Leading edge: prev clamped to row[0]
+            for y in 1..=radius.min(height - 1) {
+                read_add_u16::<CN>(
+                    &mut sums,
+                    ip.add((y + radius).min(height - 1) * stride + col),
+                );
+                read_sub_u16::<CN>(&mut sums, p0);
+                write_div_u8::<CN>(&sums, recip_sq, op.add(y * stride + col));
+            }
+
+            // Middle: pointer increments only
+            let mid_lo = radius + 1;
+            let mid_hi = height.saturating_sub(radius + 1);
+            if mid_lo <= mid_hi {
+                let mut pp = ip.add(col);
+                let mut np = ip.add((mid_lo + radius) * stride + col);
+                let mut dp = op.add(mid_lo * stride + col);
+                for _ in mid_lo..=mid_hi {
+                    read_add_u16::<CN>(&mut sums, np);
+                    read_sub_u16::<CN>(&mut sums, pp);
+                    write_div_u8::<CN>(&sums, recip_sq, dp);
+                    pp = pp.add(stride);
+                    np = np.add(stride);
+                    dp = dp.add(stride);
+                }
+            }
+
+            // Trailing edge: next clamped to last row
+            let trail = if mid_lo <= mid_hi {
+                mid_hi + 1
+            } else {
+                radius + 1
+            };
+            if trail < height {
+                let last = ip.add((height - 1) * stride + col);
+                let mut pp = ip.add((trail - radius - 1) * stride + col);
+                let mut dp = op.add(trail * stride + col);
+                for _ in trail..height {
+                    read_add_u16::<CN>(&mut sums, last);
+                    read_sub_u16::<CN>(&mut sums, pp);
+                    write_div_u8::<CN>(&sums, recip_sq, dp);
+                    pp = pp.add(stride);
+                    dp = dp.add(stride);
+                }
+            }
+        }
+    }
+
+    output
+}
+
 /// Performs a Gaussian blur on the supplied image.
 ///
 /// # Arguments
@@ -1859,5 +2161,60 @@ mod tests {
         assert!(result.into_raw().into_iter().all(|c| c == 0));
         let result = resize(&empty, 256, 256, FilterType::Lanczos3);
         assert!(result.into_raw().into_iter().all(|c| c == 0));
+    }
+
+    #[test]
+    fn test_box_blur() {
+        use super::box_blur;
+        use crate::{Rgba, RgbaImage};
+
+        // Create a simple 5x5 test image with a white pixel in the center
+        let mut img = RgbaImage::from_pixel(5, 5, Rgba([0, 0, 0, 255]));
+        img.put_pixel(2, 2, Rgba([255, 255, 255, 255]));
+
+        // Apply box blur with radius 1.0 (3x3 kernel)
+        let blurred = box_blur(&img, 1.0);
+
+        // The center pixel should be less bright (averaged with neighbors)
+        let center = blurred.get_pixel(2, 2);
+        assert!(
+            center[0] > 0 && center[0] < 255,
+            "Center should be averaged"
+        );
+
+        // Adjacent pixels should have some brightness from the blur
+        let adjacent = blurred.get_pixel(1, 2);
+        assert!(adjacent[0] > 0, "Adjacent pixels should be affected");
+
+        // Corner pixels should have minimal or no brightness
+        let corner = blurred.get_pixel(0, 0);
+        assert!(
+            corner[0] < adjacent[0],
+            "Corner should be less bright than adjacent"
+        );
+
+        // Test with grayscale image
+        let mut gray = crate::GrayImage::from_pixel(5, 5, crate::Luma([0]));
+        gray.put_pixel(2, 2, crate::Luma([255]));
+        let blurred_gray = box_blur(&gray, 1.0);
+        assert!(blurred_gray.get_pixel(2, 2)[0] < 255);
+        assert!(blurred_gray.get_pixel(1, 2)[0] > 0);
+    }
+
+    #[test]
+    fn test_box_blur_uniform() {
+        use super::box_blur;
+        use crate::RgbImage;
+
+        // Create a uniform image - blur should not change it
+        let img = RgbImage::from_pixel(10, 10, crate::Rgb([128, 128, 128]));
+        let blurred = box_blur(&img, 2.0);
+
+        // All pixels should remain the same
+        for pixel in blurred.pixels() {
+            assert_eq!(pixel[0], 128);
+            assert_eq!(pixel[1], 128);
+            assert_eq!(pixel[2], 128);
+        }
     }
 }

@@ -15,7 +15,7 @@ pub use self::affine::{
 };
 
 pub use self::sample::{
-    blur, filter3x3, interpolate_bilinear, interpolate_nearest, resize, sample_bilinear,
+    blur, box_blur, filter3x3, interpolate_bilinear, interpolate_nearest, resize, sample_bilinear,
     sample_nearest, thumbnail, unsharpen,
 };
 
