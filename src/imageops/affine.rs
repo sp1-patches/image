@@ -191,7 +191,7 @@ where
     for y in 0..h0 {
         for x in 0..w0 {
             let p = image.get_pixel(x, y);
-            destination.put_pixel(x, h0 - 1 - y, p);
+            destination.put_pixel(x, h0 - (1 + y), p);
         }
     }
     Ok(())
