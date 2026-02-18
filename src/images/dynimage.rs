@@ -1495,6 +1495,18 @@ impl GenericImageView for DynamicImage {
     fn get_pixel(&self, x: u32, y: u32) -> color::Rgba<u8> {
         dynamic_map!(*self, ref p, p.get_pixel(x, y).to_rgba().into_color())
     }
+
+    fn get_pixel_with_stride(&self, x: u32, stride: u32) -> color::Rgba<u8> {
+        dynamic_map!(
+            *self,
+            ref p,
+            p.get_pixel_with_stride(x, stride).to_rgba().into_color()
+        )
+    }
+
+    unsafe fn as_ptr(&self) -> *const <Self::Pixel as Pixel>::Subpixel {
+        todo!()
+    }
 }
 
 #[allow(deprecated)]
@@ -1540,6 +1552,10 @@ impl GenericImage for DynamicImage {
     /// Do not use is function: It is unimplemented!
     fn get_pixel_mut(&mut self, _: u32, _: u32) -> &mut color::Rgba<u8> {
         unimplemented!()
+    }
+
+    unsafe fn unsafe_put_pixel_with_stride(&mut self, x: u32, stride: u32, pixel: Self::Pixel) {
+        todo!()
     }
 }
 

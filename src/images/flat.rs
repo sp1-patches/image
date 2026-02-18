@@ -1413,6 +1413,14 @@ where
 
         *P::from_slice(&buffer[..channels])
     }
+
+    fn get_pixel_with_stride(&self, x: u32, stride: u32) -> Self::Pixel {
+        todo!()
+    }
+
+    unsafe fn as_ptr(&self) -> *const <Self::Pixel as Pixel>::Subpixel {
+        todo!()
+    }
 }
 
 impl<Buffer, P: Pixel> GenericImageView for ViewMut<Buffer, P>
@@ -1446,6 +1454,14 @@ where
 
         *P::from_slice(&buffer[..channels])
     }
+
+    fn get_pixel_with_stride(&self, x: u32, stride: u32) -> Self::Pixel {
+        todo!()
+    }
+
+    unsafe fn as_ptr(&self) -> *const <Self::Pixel as Pixel>::Subpixel {
+        todo!()
+    }
 }
 
 impl<Buffer, P: Pixel> GenericImage for ViewMut<Buffer, P>
@@ -1471,6 +1487,10 @@ where
     #[allow(deprecated)]
     fn blend_pixel(&mut self, x: u32, y: u32, pixel: Self::Pixel) {
         self.get_pixel_mut(x, y).blend(&pixel);
+    }
+
+    unsafe fn unsafe_put_pixel_with_stride(&mut self, x: u32, stride: u32, pixel: Self::Pixel) {
+        todo!()
     }
 }
 

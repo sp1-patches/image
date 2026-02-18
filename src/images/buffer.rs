@@ -827,10 +827,24 @@ where
     }
 
     #[inline(always)]
+    fn pixel_indices_with_stride(&self, x: u32, stride: u32) -> Option<Range<usize>> {
+        if x >= self.width {
+            return None;
+        }
+
+        Some(self.pixel_indices_unchecked_with_stride(x, stride))
+    }
+
+    #[inline(always)]
     fn pixel_indices_unchecked(&self, x: u32, y: u32) -> Range<usize> {
+        self.pixel_indices_unchecked_with_stride(x, y * self.width)
+    }
+
+    #[inline(always)]
+    fn pixel_indices_unchecked_with_stride(&self, x: u32, stride: u32) -> Range<usize> {
         let no_channels = <P as Pixel>::CHANNEL_COUNT as usize;
         // If in bounds, this can't overflow as we have tested that at construction!
-        let min_index = (y as usize * self.width as usize + x as usize) * no_channels;
+        let min_index = (stride as usize + x as usize) * no_channels;
         min_index..min_index + no_channels
     }
 
@@ -952,14 +966,8 @@ where
     #[inline]
     #[track_caller]
     pub fn get_pixel_mut(&mut self, x: u32, y: u32) -> &mut P {
-        match self.pixel_indices(x, y) {
-            None => panic!(
-                "Image index {:?} out of bounds {:?}",
-                (x, y),
-                (self.width, self.height)
-            ),
-            Some(pixel_indices) => <P as Pixel>::from_slice_mut(&mut self.data[pixel_indices]),
-        }
+        let pixel_indices = self.pixel_indices(x, y).unwrap();
+        <P as Pixel>::from_slice_mut(&mut self.data[pixel_indices])
     }
 
     /// Gets a reference to the mutable pixel at location `(x, y)` or returns
@@ -1322,6 +1330,11 @@ where
         *self.get_pixel(x, y)
     }
 
+    #[inline(always)]
+    unsafe fn as_ptr(&self) -> *const <Self::Pixel as Pixel>::Subpixel {
+        self.data.as_ptr()
+    }
+
     /// Returns the pixel located at (x, y), ignoring bounds checking.
     #[inline(always)]
     unsafe fn unsafe_get_pixel(&self, x: u32, y: u32) -> P {
@@ -1329,10 +1342,25 @@ where
         *<P as Pixel>::from_slice(self.data.get_unchecked(indices))
     }
 
+    /// Returns the pixel located at (x, y), ignoring bounds checking.
+    #[inline(always)]
+    unsafe fn unsafe_get_pixel_with_stride(&self, x: u32, stride: u32) -> P {
+        let indices = self.pixel_indices_unchecked_with_stride(x, stride);
+        *<P as Pixel>::from_slice(self.data.get_unchecked(indices))
+    }
+
     fn buffer_with_dimensions(&self, width: u32, height: u32) -> ImageBuffer<P, Vec<P::Subpixel>> {
         let mut buffer = ImageBuffer::new(width, height);
         buffer.copy_color_space_from(self);
         buffer
+    }
+
+    #[inline(always)]
+    fn get_pixel_with_stride(&self, x: u32, stride: u32) -> Self::Pixel {
+        let indices = self.pixel_indices_with_stride(x, stride);
+        indices
+            .map(|range| *<P as Pixel>::from_slice(&self.data[range]))
+            .unwrap()
     }
 }
 
@@ -1353,6 +1381,14 @@ where
     #[inline(always)]
     unsafe fn unsafe_put_pixel(&mut self, x: u32, y: u32, pixel: P) {
         let indices = self.pixel_indices_unchecked(x, y);
+        let p = <P as Pixel>::from_slice_mut(self.data.get_unchecked_mut(indices));
+        *p = pixel;
+    }
+
+    /// Puts a pixel at location (x, y), ignoring bounds checking.
+    #[inline(always)]
+    unsafe fn unsafe_put_pixel_with_stride(&mut self, x: u32, stride: u32, pixel: P) {
+        let indices = self.pixel_indices_unchecked_with_stride(x, stride);
         let p = <P as Pixel>::from_slice_mut(self.data.get_unchecked_mut(indices));
         *p = pixel;
     }
