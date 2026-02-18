@@ -201,6 +201,14 @@ where
     > {
         self.image.buffer_with_dimensions(width, height)
     }
+
+    fn get_pixel_with_stride(&self, x: u32, stride: u32) -> Self::Pixel {
+        todo!()
+    }
+
+    unsafe fn as_ptr(&self) -> *const <Self::Pixel as Pixel>::Subpixel {
+        todo!()
+    }
 }
 
 #[allow(deprecated)]
@@ -222,6 +230,10 @@ where
     fn blend_pixel(&mut self, x: u32, y: u32, pixel: Self::Pixel) {
         self.image
             .blend_pixel(x + self.xoffset, y + self.yoffset, pixel);
+    }
+
+    unsafe fn unsafe_put_pixel_with_stride(&mut self, x: u32, stride: u32, pixel: Self::Pixel) {
+        todo!()
     }
 }
 

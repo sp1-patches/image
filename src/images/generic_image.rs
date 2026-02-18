@@ -41,8 +41,12 @@ pub trait GenericImageView {
     /// # Panics
     ///
     /// Panics if `(x, y)` is out of bounds.
-    fn get_pixel(&self, x: u32, y: u32) -> Self::Pixel;
+    fn get_pixel(&self, x: u32, y: u32) -> Self::Pixel {
+        let stride = y * self.width();
+        self.get_pixel_with_stride(x, stride)
+    }
 
+    fn get_pixel_with_stride(&self, x: u32, stride: u32) -> Self::Pixel;
     /// Returns the pixel located at (x, y). Indexed from top left.
     ///
     /// This function can be implemented in a way that ignores bounds checking.
@@ -54,6 +58,12 @@ pub trait GenericImageView {
     unsafe fn unsafe_get_pixel(&self, x: u32, y: u32) -> Self::Pixel {
         self.get_pixel(x, y)
     }
+
+    unsafe fn unsafe_get_pixel_with_stride(&self, x: u32, stride: u32) -> Self::Pixel {
+        self.get_pixel_with_stride(x, stride)
+    }
+
+    unsafe fn as_ptr(&self) -> *const <Self::Pixel as Pixel>::Subpixel;
 
     /// Returns an Iterator over the pixels of this image.
     /// The iterator yields the coordinates of each pixel
@@ -212,6 +222,16 @@ pub trait GenericImage: GenericImageView {
     unsafe fn unsafe_put_pixel(&mut self, x: u32, y: u32, pixel: Self::Pixel) {
         self.put_pixel(x, y, pixel);
     }
+
+    /// Puts a pixel at location (x, y). Indexed from top left.
+    ///
+    /// This function can be implemented in a way that ignores bounds checking.
+    /// # Safety
+    ///
+    /// The coordinates must be [`in_bounds`] of the image.
+    ///
+    /// [`in_bounds`]: traits.GenericImageView.html#method.in_bounds
+    unsafe fn unsafe_put_pixel_with_stride(&mut self, x: u32, stride: u32, pixel: Self::Pixel);
 
     /// Put a pixel at location (x, y), taking into account alpha channels
     #[deprecated(

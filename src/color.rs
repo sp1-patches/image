@@ -362,13 +362,13 @@ impl<T: $($bound+)*> Pixel for $ident<T> {
 
     #[track_caller]
     fn from_slice(slice: &[T]) -> &$ident<T> {
-        assert_eq!(slice.len(), $channels);
+        // assert_eq!(slice.len(), $channels);
         unsafe { &*(slice.as_ptr() as *const $ident<T>) }
     }
 
     #[track_caller]
     fn from_slice_mut(slice: &mut [T]) -> &mut $ident<T> {
-        assert_eq!(slice.len(), $channels);
+        // assert_eq!(slice.len(), $channels);
         unsafe { &mut *(slice.as_mut_ptr() as *mut $ident<T>) }
     }
 

@@ -188,10 +188,19 @@ where
         )));
     }
 
-    for y in 0..h0 {
-        for x in 0..w0 {
-            let p = image.get_pixel(x, y);
-            destination.put_pixel(x, h0 - 1 - y, p);
+    let channels = <I::Pixel as Pixel>::CHANNEL_COUNT as usize;
+    let row_bytes = w0 as usize * channels;
+
+    for y in 0..(h0 as usize) {
+        let src_start = y * row_bytes;
+        let dst_start = (h0 as usize - 1 - y) * row_bytes;
+        // Safety: bounds verified by dimension check above
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                image.as_ptr().add(src_start),
+                destination.as_mut_ptr().add(dst_start),
+                row_bytes,
+            );
         }
     }
     Ok(())
